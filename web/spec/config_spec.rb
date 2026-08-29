@@ -934,6 +934,69 @@ RSpec.describe PotatoMesh::Config do
     end
   end
 
+  describe ".telemetry_requests_enabled?" do
+    it "defaults to disabled" do
+      within_env("TELEMETRY_REQUESTS" => nil) do
+        expect(described_class.telemetry_requests_enabled?).to be(false)
+      end
+    end
+
+    it "enables only on an exact 1" do
+      within_env("TELEMETRY_REQUESTS" => "1") do
+        expect(described_class.telemetry_requests_enabled?).to be(true)
+      end
+      within_env("TELEMETRY_REQUESTS" => "true") do
+        expect(described_class.telemetry_requests_enabled?).to be(false)
+      end
+    end
+  end
+
+  describe ".telemetry_request_cooldown_seconds" do
+    it "defaults to 900" do
+      within_env("TELEMETRY_REQUEST_COOLDOWN_SECONDS" => nil) do
+        expect(described_class.telemetry_request_cooldown_seconds).to eq(900)
+      end
+    end
+
+    it "honours overrides above the floor" do
+      within_env("TELEMETRY_REQUEST_COOLDOWN_SECONDS" => "600") do
+        expect(described_class.telemetry_request_cooldown_seconds).to eq(600)
+      end
+    end
+
+    it "clamps values below the 300 second floor up to the floor" do
+      within_env("TELEMETRY_REQUEST_COOLDOWN_SECONDS" => "60") do
+        expect(described_class.telemetry_request_cooldown_seconds).to eq(300)
+      end
+    end
+
+    it "falls back to the default on junk" do
+      within_env("TELEMETRY_REQUEST_COOLDOWN_SECONDS" => "soon") do
+        expect(described_class.telemetry_request_cooldown_seconds).to eq(900)
+      end
+    end
+  end
+
+  describe ".telemetry_request_hourly_cap" do
+    it "defaults to 12" do
+      within_env("TELEMETRY_REQUEST_HOURLY_CAP" => nil) do
+        expect(described_class.telemetry_request_hourly_cap).to eq(12)
+      end
+    end
+
+    it "passes non-positive values through so the route can disable accepts" do
+      within_env("TELEMETRY_REQUEST_HOURLY_CAP" => "0") do
+        expect(described_class.telemetry_request_hourly_cap).to eq(0)
+      end
+    end
+
+    it "falls back to the default on junk" do
+      within_env("TELEMETRY_REQUEST_HOURLY_CAP" => "lots") do
+        expect(described_class.telemetry_request_hourly_cap).to eq(12)
+      end
+    end
+  end
+
   def within_env(values)
     original = {}
     values.each do |key, value|

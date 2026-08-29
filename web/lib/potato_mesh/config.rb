@@ -94,6 +94,15 @@ module PotatoMesh
     DEFAULT_OG_IMAGE_NETWORK_IDLE_DURATION = 1.5
     DEFAULT_OG_IMAGE_NETWORK_IDLE_TIMEOUT = 8
 
+    # Default per-node cooldown between accepted on-demand telemetry requests.
+    DEFAULT_TELEMETRY_REQUEST_COOLDOWN_SECONDS = 900
+
+    # Hard floor for the per-node cooldown; lower operator values clamp up.
+    MIN_TELEMETRY_REQUEST_COOLDOWN_SECONDS = 300
+
+    # Default global cap on accepted telemetry requests per hour.
+    DEFAULT_TELEMETRY_REQUEST_HOURLY_CAP = 12
+
     # Retrieve the configured API token used for authenticated requests.
     #
     # @return [String, nil] API token when provided, otherwise nil.
@@ -350,6 +359,46 @@ module PotatoMesh
     # @return [Boolean] true when the +GET /api/events+ stream is served.
     def live_updates_enabled?
       ENV.fetch("EVENTS", "1").to_s.strip != "0"
+    end
+
+    # Determine whether viewer-facing on-demand telemetry requests are offered.
+    #
+    # Off by default; enabled only by +TELEMETRY_REQUESTS=1+. When off, both
+    # telemetry-request routes 404 and the UI button is never rendered.
+    #
+    # @return [Boolean] true when TELEMETRY_REQUESTS=1 in the environment.
+    def telemetry_requests_enabled?
+      ENV.fetch("TELEMETRY_REQUESTS", "0").to_s.strip == "1"
+    end
+
+    # Per-node cooldown (seconds) between accepted telemetry requests.
+    #
+    # Overridable via +TELEMETRY_REQUEST_COOLDOWN_SECONDS+ but clamped to a
+    # 300 second floor: every accepted request is real LoRa airtime, so the
+    # knob fails safe upward rather than rejecting a low value.
+    #
+    # @return [Integer] cooldown seconds, never below the floor.
+    def telemetry_request_cooldown_seconds
+      value = fetch_positive_integer(
+        "TELEMETRY_REQUEST_COOLDOWN_SECONDS",
+        DEFAULT_TELEMETRY_REQUEST_COOLDOWN_SECONDS,
+      )
+      value < MIN_TELEMETRY_REQUEST_COOLDOWN_SECONDS ? MIN_TELEMETRY_REQUEST_COOLDOWN_SECONDS : value
+    end
+
+    # Global cap on accepted telemetry requests per rolling hour.
+    #
+    # Non-positive values are passed through unchanged: the POST route treats
+    # +<= 0+ as "accepts disabled" (belt-and-braces beside the feature flag).
+    #
+    # @return [Integer] configured cap, or the default on junk input.
+    def telemetry_request_hourly_cap
+      raw = ENV["TELEMETRY_REQUEST_HOURLY_CAP"]
+      return DEFAULT_TELEMETRY_REQUEST_HOURLY_CAP if raw.nil? || raw.strip.empty?
+
+      Integer(raw.strip, 10)
+    rescue ArgumentError
+      DEFAULT_TELEMETRY_REQUEST_HOURLY_CAP
     end
 
     # Slow safety-poll cadence (seconds) used while live updates are active.
