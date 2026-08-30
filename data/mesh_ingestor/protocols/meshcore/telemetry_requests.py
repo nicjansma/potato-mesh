@@ -121,7 +121,7 @@ def _claim_telemetry_request() -> tuple[dict | None, bool]:
     return None, saw_feature
 
 
-def _find_roster_contact(iface, node_id: str):
+def _find_roster_contact(iface, node_id: str) -> dict | None:
     """Return the roster contact whose canonical node id matches *node_id*.
 
     Parameters:

@@ -325,10 +325,15 @@ after 600 s.
 #### `POST /api/telemetry-requests/claim`
 
 Ingestor-facing (`Authorization: Bearer` ingest token). 404 when the feature
-flag is off. Atomically claims the oldest unclaimed request younger than
-600 s: 200 `{"id":N,"nodeId":"!xxxxxxxx","requestedAt":N}`, or 204 when none
-pending. The single-UPDATE claim makes co-operating ingestors safe — first
-claimer wins; rows older than 7 days are pruned in the same transaction.
+flag is off. The token gate runs first: without a valid `Authorization: Bearer`
+token the route answers 403 regardless of flag state, so an unauthenticated
+probe learns nothing about the flag. Atomically claims the oldest unclaimed
+request younger than 600 s: 200 `{"id":N,"nodeId":"!xxxxxxxx","requestedAt":N}`,
+or 204 when none pending. The single-UPDATE claim makes co-operating ingestors
+safe — first claimer wins; with multiple MeshCore ingestors, the winning
+claimer may lack the node in its roster and will drop the request (the cooldown
+still applies); run one MeshCore ingestor per instance for reliable on-demand
+delivery. Rows older than 7 days are pruned in the same transaction.
 
 ### GET endpoint filtering
 
