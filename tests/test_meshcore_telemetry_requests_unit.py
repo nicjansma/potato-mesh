@@ -24,10 +24,20 @@ from data.mesh_ingestor.protocols.meshcore.interface import _MeshcoreInterface
 _KEY = "aabbccddeeff" + "00" * 26
 
 
-def _fake_urlopen_factory(responses):
-    """Return a urlopen stub yielding per-URL (status, body) or raising."""
+def _fake_urlopen_factory(responses, *, captured=None):
+    """Return a urlopen stub yielding per-URL (status, body) or raising.
+
+    Parameters:
+        responses: Mapping of full request URL to either an
+            ``(status, body)`` tuple or an ``Exception`` instance to raise.
+        captured: Optional list; when given, every ``Request`` object passed
+            to the stub is appended to it so callers can assert on method,
+            body, and headers after the call.
+    """
 
     class _Resp:
+        """Minimal context-manager stand-in for ``http.client.HTTPResponse``."""
+
         def __init__(self, status, body):
             self.status = status
             self._body = body
@@ -42,6 +52,8 @@ def _fake_urlopen_factory(responses):
             return False
 
     def _fake(req, timeout=None):
+        if captured is not None:
+            captured.append(req)
         outcome = responses[req.full_url]
         if isinstance(outcome, Exception):
             raise outcome
@@ -51,6 +63,7 @@ def _fake_urlopen_factory(responses):
 
 
 def test_claim_returns_payload_and_feature_seen(monkeypatch):
+    """A 200 response is decoded and reported as a successful, seen claim."""
     monkeypatch.setattr(mc_req.config, "_debug_log", lambda *a, **k: None)
     monkeypatch.setattr(mc_req.config, "INSTANCES", (("http://x", "tok"),))
     body = json.dumps({"id": 5, "nodeId": "!aabbccdd", "requestedAt": 1}).encode()
@@ -64,7 +77,59 @@ def test_claim_returns_payload_and_feature_seen(monkeypatch):
     assert seen is True
 
 
+def test_claim_request_contract_method_body_and_auth_header(monkeypatch):
+    """The claim POST uses the documented method, body, and headers.
+
+    Verifies the outgoing request is a ``POST`` to the claim path with an
+    empty JSON body, JSON ``Content-Type``/``Accept`` headers, and a
+    ``Bearer`` ``Authorization`` header carrying the configured token.
+    """
+    monkeypatch.setattr(mc_req.config, "_debug_log", lambda *a, **k: None)
+    monkeypatch.setattr(mc_req.config, "INSTANCES", (("http://x", "tok"),))
+    body = json.dumps({"id": 5, "nodeId": "!aabbccdd", "requestedAt": 1}).encode()
+    captured = []
+    monkeypatch.setattr(
+        mc_req.urllib.request,
+        "urlopen",
+        _fake_urlopen_factory(
+            {"http://x/api/telemetry-requests/claim": (200, body)},
+            captured=captured,
+        ),
+    )
+    mc_req._claim_telemetry_request()
+
+    assert len(captured) == 1
+    req = captured[0]
+    assert req.full_url == "http://x/api/telemetry-requests/claim"
+    assert req.get_method() == "POST"
+    assert req.data == b"{}"
+    assert req.get_header("Content-type") == "application/json"
+    assert req.get_header("Accept") == "application/json"
+    assert req.get_header("Authorization") == "Bearer tok"
+
+
+def test_claim_omits_auth_header_when_token_is_empty(monkeypatch):
+    """No ``Authorization`` header is sent for an instance with an empty token."""
+    monkeypatch.setattr(mc_req.config, "_debug_log", lambda *a, **k: None)
+    monkeypatch.setattr(mc_req.config, "INSTANCES", (("http://x", ""),))
+    body = json.dumps({"id": 5, "nodeId": "!aabbccdd", "requestedAt": 1}).encode()
+    captured = []
+    monkeypatch.setattr(
+        mc_req.urllib.request,
+        "urlopen",
+        _fake_urlopen_factory(
+            {"http://x/api/telemetry-requests/claim": (200, body)},
+            captured=captured,
+        ),
+    )
+    mc_req._claim_telemetry_request()
+
+    assert len(captured) == 1
+    assert captured[0].get_header("Authorization") is None
+
+
 def test_claim_204_means_empty_queue_but_feature_on(monkeypatch):
+    """A 204 (empty queue) still counts as the feature having been seen."""
     monkeypatch.setattr(mc_req.config, "_debug_log", lambda *a, **k: None)
     monkeypatch.setattr(mc_req.config, "INSTANCES", (("http://x", "tok"),))
     monkeypatch.setattr(
@@ -76,6 +141,7 @@ def test_claim_204_means_empty_queue_but_feature_on(monkeypatch):
 
 
 def test_claim_404_everywhere_reports_feature_off(monkeypatch):
+    """Every instance answering 404 is the only case reported as feature off."""
     monkeypatch.setattr(mc_req.config, "_debug_log", lambda *a, **k: None)
     monkeypatch.setattr(mc_req.config, "INSTANCES", (("http://x", "tok"),))
     err = urllib.error.HTTPError("u", 404, "nf", {}, io.BytesIO(b""))
@@ -88,6 +154,7 @@ def test_claim_404_everywhere_reports_feature_off(monkeypatch):
 
 
 def test_claim_tolerates_network_errors_and_tries_next_instance(monkeypatch):
+    """A network error on one instance falls through to the next instance."""
     monkeypatch.setattr(mc_req.config, "_debug_log", lambda *a, **k: None)
     monkeypatch.setattr(
         mc_req.config, "INSTANCES", (("http://down", ""), ("http://up", "tok"))
@@ -107,6 +174,31 @@ def test_claim_tolerates_network_errors_and_tries_next_instance(monkeypatch):
     assert claimed["id"] == 9 and seen is True
 
 
+def test_claim_network_errors_everywhere_are_unknown_not_off(monkeypatch):
+    """Every instance being unreachable is "unknown", not "confirmed off".
+
+    Unlike an explicit 404, a network error means the instance's feature
+    state was never actually observed, so the caller must keep polling at
+    the normal cadence instead of backing off as if the feature were
+    disabled server-side.
+    """
+    monkeypatch.setattr(mc_req.config, "_debug_log", lambda *a, **k: None)
+    monkeypatch.setattr(
+        mc_req.config, "INSTANCES", (("http://a", ""), ("http://b", "tok"))
+    )
+    monkeypatch.setattr(
+        mc_req.urllib.request,
+        "urlopen",
+        _fake_urlopen_factory(
+            {
+                "http://a/api/telemetry-requests/claim": OSError("refused"),
+                "http://b/api/telemetry-requests/claim": OSError("timed out"),
+            }
+        ),
+    )
+    assert mc_req._claim_telemetry_request() == (None, True)
+
+
 def test_claim_non_404_http_error_is_logged_and_counts_as_feature_seen(monkeypatch):
     """A non-404 HTTP error (e.g. 500) must not be mistaken for "feature off":
 
@@ -124,6 +216,7 @@ def test_claim_non_404_http_error_is_logged_and_counts_as_feature_seen(monkeypat
 
 
 def test_find_roster_contact_matches_and_misses():
+    """A roster contact is found by canonical node id, or ``None`` on a miss."""
     iface = _MeshcoreInterface(target=None)
     iface._update_contact({"public_key": _KEY, "adv_name": "Sensor"})
     contact = mc_req._find_roster_contact(iface, "!aabbccdd")

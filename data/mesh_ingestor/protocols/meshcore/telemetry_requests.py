@@ -29,6 +29,15 @@ that governs whether ``req_telemetry`` may actually go out on the mesh is
 enforced at the call site in ``telemetry.py``, immediately before the send,
 per the "Adding a New Ingestor Protocol" contract in the repository's
 ``CLAUDE.md``.
+
+Claim-poll error logging is split by actionability: network failures and
+malformed responses (an instance being down, unreachable, or timing out) are
+expected background noise for an ingestor that polls every instance every
+:data:`_CLAIM_POLL_SECONDS`, so they log at ``severity="debug"`` (silent
+unless ``DEBUG=1``).  A non-404 HTTP error (e.g. ``401``/``500``) means the
+instance *is* reachable but rejected the request — typically a
+misconfigured or expired ``API_TOKEN`` — which an operator can act on, so it
+logs at ``severity="warning"`` (printed unconditionally).
 """
 
 from __future__ import annotations
@@ -54,13 +63,20 @@ def _claim_telemetry_request() -> tuple[dict | None, bool]:
 
     Tries each ``config.INSTANCES`` pair in order; the first 200 wins.  A 204
     means the queue is empty; a 404 means the feature is disabled on that
-    instance.  Network and HTTP errors are logged at debug severity and never
-    raise — a dead instance must not kill the poll loop.
+    instance.  Network/decode failures log at debug severity, a non-404 HTTP
+    error logs at warning severity (see the module docstring for why), and
+    neither ever raises — a dead or misbehaving instance must not kill the
+    poll loop.
 
     Returns:
-        ``(payload, feature_seen)`` — the claimed request mapping (or ``None``)
-        and whether any instance answered something other than 404 (callers
-        back off to :data:`_CLAIM_BACKOFF_SECONDS` when ``False``).
+        ``(payload, feature_seen)`` — the claimed request mapping (or
+        ``None``) and whether the run should be treated as "the feature is
+        confirmed off".  ``feature_seen`` is ``False`` *only* when every
+        instance explicitly answered 404; an unreachable instance, a
+        timeout, or any other error is "unknown", not "off", and still
+        counts as ``True`` so callers poll again at
+        :data:`_CLAIM_POLL_SECONDS` instead of backing off to
+        :data:`_CLAIM_BACKOFF_SECONDS`.
     """
     saw_feature = False
     for instance, token in config.INSTANCES:
@@ -87,10 +103,15 @@ def _claim_telemetry_request() -> tuple[dict | None, bool]:
                 )
             continue
         except Exception as exc:
+            # Unreachable instance, timeout, or malformed response: the
+            # instance's feature state is *unknown*, not confirmed off, so
+            # this must not be mistaken for a 404 — see the Returns note
+            # above and the module docstring's severity-split rationale.
+            saw_feature = True
             config._debug_log(
                 "telemetry request claim errored",
                 context="meshcore.telemetry.request",
-                severity="warning",
+                severity="debug",
                 url=url,
                 error=str(exc),
             )
