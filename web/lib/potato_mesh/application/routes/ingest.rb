@@ -527,6 +527,21 @@ module PotatoMesh
           ensure
             db&.close
           end
+
+          app.post "/api/telemetry-requests/claim" do
+            require_token!
+            content_type :json
+            halt 404, { error: "not found" }.to_json unless PotatoMesh::Config.telemetry_requests_enabled?
+            db = open_database
+            row = claim_telemetry_request!(db)
+            if row.nil?
+              # No pending work: 204 keeps the ingestor's poll loop cheap.
+              halt 204
+            end
+            { id: row[0], nodeId: row[1], requestedAt: row[2] }.to_json
+          ensure
+            db&.close
+          end
         end
       end
     end

@@ -19,6 +19,13 @@ require "json"
 
 RSpec.describe "Telemetry request storage" do
   let(:app) { Sinatra::Application }
+  let(:api_token) { "secret-token" }
+  let(:auth_headers) do
+    {
+      "CONTENT_TYPE" => "application/json",
+      "HTTP_AUTHORIZATION" => "Bearer #{api_token}",
+    }
+  end
 
   def with_db(readonly: false)
     db = PotatoMesh::Application.open_database(readonly: readonly)
@@ -61,12 +68,15 @@ RSpec.describe "Telemetry request storage" do
   end
 
   before do
+    @original_token = ENV["API_TOKEN"]
+    ENV["API_TOKEN"] = api_token
     with_db do |db|
       db.execute("DELETE FROM telemetry_requests")
       db.execute("DELETE FROM nodes WHERE node_id LIKE '!aaaa%' OR node_id LIKE '!bbbb%' OR node_id LIKE '!cccc%' OR node_id LIKE '!dddd%'")
     end
   end
   after do
+    ENV["API_TOKEN"] = @original_token
     with_db do |db|
       db.execute("DELETE FROM telemetry_requests")
       db.execute("DELETE FROM nodes WHERE node_id LIKE '!aaaa%' OR node_id LIKE '!bbbb%' OR node_id LIKE '!cccc%' OR node_id LIKE '!dddd%'")
@@ -195,6 +205,44 @@ RSpec.describe "Telemetry request storage" do
       helpers.claim_telemetry_request!(db, now: now)
       count = db.get_first_value("SELECT COUNT(*) FROM telemetry_requests").to_i
       expect(count).to eq(0)
+    end
+  end
+
+  describe "POST /api/telemetry-requests/claim" do
+    it "requires the ingest token" do
+      with_feature do
+        post "/api/telemetry-requests/claim", "{}", json_headers
+        expect(last_response.status).to eq(403)
+      end
+    end
+
+    it "404s when the feature flag is off" do
+      with_feature(enabled: "0") do
+        post "/api/telemetry-requests/claim", "{}", auth_headers
+        expect(last_response.status).to eq(404)
+      end
+    end
+
+    it "204s when nothing is pending" do
+      with_feature do
+        post "/api/telemetry-requests/claim", "{}", auth_headers
+        expect(last_response.status).to eq(204)
+      end
+    end
+
+    it "claims the oldest pending request exactly once" do
+      with_feature do
+        now = Time.now.to_i
+        with_db { |db| helpers.insert_telemetry_request(db, "!bbbb0001", now: now - 30) }
+        post "/api/telemetry-requests/claim", "{}", auth_headers
+        expect(last_response.status).to eq(200)
+        body = JSON.parse(last_response.body)
+        expect(body["nodeId"]).to eq("!bbbb0001")
+        expect(body["requestedAt"]).to eq(now - 30)
+
+        post "/api/telemetry-requests/claim", "{}", auth_headers
+        expect(last_response.status).to eq(204)
+      end
     end
   end
 end
