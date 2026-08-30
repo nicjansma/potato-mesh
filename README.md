@@ -119,6 +119,9 @@ The web app can be configured with environment variables (defaults shown):
 | `OG_IMAGE_URL` | _unset_ | Optional absolute URL for the social preview image. Must use an `http://` or `https://` scheme; values with other schemes are ignored. Most social platforms (Facebook, LinkedIn, Slack, iMessage) require **HTTPS** to render the card. When set, replaces the runtime-generated `/og-image.png` so deployments without Chromium (or with size-conscious images) can point at a CDN. |
 | `PAGES_DIR` | `./pages` | The directory for static, custom-content pages. |
 | `PROM_REPORT_IDS` | _unset_ | Comma-separated node ids to expose as per-node Prometheus gauges. Empty exports none. |
+| `TELEMETRY_REQUESTS` | `0` | Set `1` to show a "Request telemetry" button on MeshCore nodes; the ingestor only transmits if it runs with `TX_ENABLED=1`. |
+| `TELEMETRY_REQUEST_COOLDOWN_SECONDS` | `900` | Seconds before the same node can be requested again; values under 300 are raised to 300. |
+| `TELEMETRY_REQUEST_HOURLY_CAP` | `12` | Accepted requests per hour across all nodes; `0` disables accepting requests. |
 
 The application derives SEO-friendly document titles, descriptions, and social
 preview tags from these existing configuration values. `/robots.txt` and

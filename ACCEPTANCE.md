@@ -361,6 +361,27 @@ cursor that only *narrows* the result set (the 7-day floor and the per-request
 `before` recovers **every** in-window message instead of stalling at the newest
 1000 — the landing page and `/chat` subpage page until the window is exhausted.
 
+### TQ-C1 — Telemetry-request routes are flag-gated and rate-limited — TQ1/TQ3
+
+Start the web app with `API_TOKEN=acctest TELEMETRY_REQUESTS=0`, then:
+
+    curl -s -o /dev/null -w '%{http_code}' -X POST localhost:41447/api/telemetry-requests -d '{"nodeId":"!deadbeef"}'
+    # Expected: 404
+    curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Authorization: Bearer acctest' localhost:41447/api/telemetry-requests/claim
+    # Expected: 404
+
+Restart with `TELEMETRY_REQUESTS=1`, seed a meshcore node via `POST /api/nodes`
+(protocol `meshcore`), then:
+
+    curl -s -o /dev/null -w '%{http_code}' -X POST localhost:41447/api/telemetry-requests -d '{"nodeId":"<seeded id>"}'
+    # Expected: 202
+    curl -s -o /dev/null -w '%{http_code}' -X POST localhost:41447/api/telemetry-requests -d '{"nodeId":"<seeded id>"}'
+    # Expected: 429 (repeat inside the cooldown)
+    curl -s -o /dev/null -w '%{http_code}' -X POST localhost:41447/api/telemetry-requests/claim
+    # Expected: 403 (no token)
+    curl -s -X POST -H 'Authorization: Bearer acctest' localhost:41447/api/telemetry-requests/claim
+    # Expected: 200 with {"id":…,"nodeId":"<seeded id>",…}; a second call returns 204
+
 ---
 
 ## Layer D — Operator-facing behavior
