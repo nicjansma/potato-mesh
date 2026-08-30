@@ -308,16 +308,19 @@ Heartbeat payload:
 
 #### `POST /api/telemetry-requests`
 
-Viewer-facing (no token). Exists only when `TELEMETRY_REQUESTS=1`; otherwise
-404 (route indistinguishable from absent). Body: `{"nodeId": "!xxxxxxxx"}`
-(`node_id` accepted). Gates in order: parseable JSON object (400), canonical
-node id (400), node known (404), node protocol `meshcore` (422), per-node
-cooldown `TELEMETRY_REQUEST_COOLDOWN_SECONDS` (default 900, floor 300) and
-global `TELEMETRY_REQUEST_HOURLY_CAP` (default 12; `<= 0` disables accepts) —
-both 429 with a `Retry-After` header and `retryAfterSeconds` field. Success:
-202 `{"status":"ok","cooldownSeconds":N}` and one row inserted into
-`telemetry_requests`. Accepted requests are advisory: execution requires an
-ingestor with `TX_ENABLED=1` (SPEC MA7); unclaimed rows expire after 600 s.
+Viewer-facing (no token). Exists only when `TELEMETRY_REQUESTS=1` **and**
+`TELEMETRY_REQUEST_HOURLY_CAP` is `> 0`; otherwise 404 (route indistinguishable
+from absent — setting the cap `<= 0` disables accepts entirely, checked before
+the body is even parsed). Body: `{"nodeId": "!xxxxxxxx"}` (`node_id`
+accepted). Gates in order: parseable JSON object (400), canonical node id
+(400), node known (404), node protocol `meshcore` (422), per-node cooldown
+`TELEMETRY_REQUEST_COOLDOWN_SECONDS` (default 900, floor 300) — 429 with a
+`Retry-After` header and `retryAfterSeconds` field — then the global hourly
+cap (default 12 accepted requests per rolling hour) — also 429, `Retry-After:
+3600`. Success: 202 `{"status":"ok","cooldownSeconds":N}` and one row
+inserted into `telemetry_requests`. Accepted requests are advisory: execution
+requires an ingestor with `TX_ENABLED=1` (SPEC MA7); unclaimed rows expire
+after 600 s.
 
 #### `POST /api/telemetry-requests/claim`
 

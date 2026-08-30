@@ -365,22 +365,28 @@ cursor that only *narrows* the result set (the 7-day floor and the per-request
 
 Start the web app with `API_TOKEN=acctest TELEMETRY_REQUESTS=0`, then:
 
-    curl -s -o /dev/null -w '%{http_code}' -X POST localhost:41447/api/telemetry-requests -d '{"nodeId":"!deadbeef"}'
+    curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' localhost:41447/api/telemetry-requests -d '{"nodeId":"!deadbeef"}'
     # Expected: 404
     curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Authorization: Bearer acctest' localhost:41447/api/telemetry-requests/claim
     # Expected: 404
 
-Restart with `TELEMETRY_REQUESTS=1`, seed a meshcore node via `POST /api/nodes`
-(protocol `meshcore`), then:
+Restart with `TELEMETRY_REQUESTS=1`, seed a meshcore node:
 
-    curl -s -o /dev/null -w '%{http_code}' -X POST localhost:41447/api/telemetry-requests -d '{"nodeId":"<seeded id>"}'
+    curl -s -X POST -H 'Authorization: Bearer acctest' -H 'Content-Type: application/json' \
+      localhost:41447/api/nodes \
+      -d '{"protocol":"meshcore","!deadbeef":{"node_id":"!deadbeef","last_heard":'"$(date +%s)"',"protocol":"meshcore"}}'
+    # Expected: 201
+
+then:
+
+    curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' localhost:41447/api/telemetry-requests -d '{"nodeId":"!deadbeef"}'
     # Expected: 202
-    curl -s -o /dev/null -w '%{http_code}' -X POST localhost:41447/api/telemetry-requests -d '{"nodeId":"<seeded id>"}'
+    curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' localhost:41447/api/telemetry-requests -d '{"nodeId":"!deadbeef"}'
     # Expected: 429 (repeat inside the cooldown)
     curl -s -o /dev/null -w '%{http_code}' -X POST localhost:41447/api/telemetry-requests/claim
     # Expected: 403 (no token)
     curl -s -X POST -H 'Authorization: Bearer acctest' localhost:41447/api/telemetry-requests/claim
-    # Expected: 200 with {"id":…,"nodeId":"<seeded id>",…}; a second call returns 204
+    # Expected: 200 with {"id":…,"nodeId":"!deadbeef",…}; a second call returns 204
 
 ---
 
