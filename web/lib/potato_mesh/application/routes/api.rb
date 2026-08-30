@@ -568,6 +568,47 @@ module PotatoMesh
             api_cache_control
             cached[:value]
           end
+
+          # Accept an on-demand telemetry request for a MeshCore node,
+          # subject to the feature flag, per-node cooldown, and global hourly
+          # cap. The ingestor claims queued rows separately; this route only
+          # records intent.
+          app.post "/api/telemetry-requests" do
+            content_type :json
+            # Feature-flag gate first: an unflagged instance shows no evidence
+            # the route exists (404, same body as an unknown path).
+            halt 404, { error: "not found" }.to_json unless PotatoMesh::Config.telemetry_requests_enabled?
+            cap = PotatoMesh::Config.telemetry_request_hourly_cap
+            halt 404, { error: "not found" }.to_json if cap <= 0
+            begin
+              data = JSON.parse(read_json_body)
+            rescue JSON::ParserError
+              halt 400, { error: "invalid JSON" }.to_json
+            end
+            halt 400, { error: "invalid payload" }.to_json unless data.is_a?(Hash)
+            parts = canonical_node_parts(data["nodeId"] || data["node_id"])
+            halt 400, { error: "invalid node id" }.to_json unless parts
+            node_id, = parts
+            db = open_database
+            protocol = db.get_first_value("SELECT protocol FROM nodes WHERE node_id = ?", [node_id])
+            halt 404, { error: "unknown node" }.to_json unless protocol
+            halt 422, { error: "unsupported protocol" }.to_json unless protocol == "meshcore"
+            cooldown = PotatoMesh::Config.telemetry_request_cooldown_seconds
+            remaining = telemetry_request_cooldown_remaining(db, node_id, cooldown)
+            if remaining.positive?
+              response.headers["Retry-After"] = remaining.to_s
+              halt 429, { error: "cooldown", retryAfterSeconds: remaining }.to_json
+            end
+            if telemetry_requests_accepted_last_hour(db) >= cap
+              response.headers["Retry-After"] = "3600"
+              halt 429, { error: "rate limited", retryAfterSeconds: 3600 }.to_json
+            end
+            insert_telemetry_request(db, node_id)
+            status 202
+            { status: "ok", cooldownSeconds: cooldown }.to_json
+          ensure
+            db&.close
+          end
         end
       end
     end

@@ -35,8 +35,119 @@ RSpec.describe "Telemetry request storage" do
     end.new
   end
 
-  before { with_db { |db| db.execute("DELETE FROM telemetry_requests") } }
-  after { with_db { |db| db.execute("DELETE FROM telemetry_requests") } }
+  let(:json_headers) { { "CONTENT_TYPE" => "application/json" } }
+
+  def with_feature(enabled: "1", cooldown: nil, cap: nil)
+    original = {
+      "TELEMETRY_REQUESTS" => ENV["TELEMETRY_REQUESTS"],
+      "TELEMETRY_REQUEST_COOLDOWN_SECONDS" => ENV["TELEMETRY_REQUEST_COOLDOWN_SECONDS"],
+      "TELEMETRY_REQUEST_HOURLY_CAP" => ENV["TELEMETRY_REQUEST_HOURLY_CAP"],
+    }
+    ENV["TELEMETRY_REQUESTS"] = enabled
+    ENV["TELEMETRY_REQUEST_COOLDOWN_SECONDS"] = cooldown
+    ENV["TELEMETRY_REQUEST_HOURLY_CAP"] = cap
+    yield
+  ensure
+    original.each { |k, v| v.nil? ? ENV.delete(k) : ENV[k] = v }
+  end
+
+  def seed_node(node_id, protocol)
+    with_db do |db|
+      db.execute(
+        "INSERT OR REPLACE INTO nodes(node_id, last_heard, protocol) VALUES(?, ?, ?)",
+        [node_id, Time.now.to_i, protocol],
+      )
+    end
+  end
+
+  before do
+    with_db do |db|
+      db.execute("DELETE FROM telemetry_requests")
+      db.execute("DELETE FROM nodes WHERE node_id LIKE '!aaaa%' OR node_id LIKE '!bbbb%' OR node_id LIKE '!cccc%' OR node_id LIKE '!dddd%'")
+    end
+  end
+  after do
+    with_db do |db|
+      db.execute("DELETE FROM telemetry_requests")
+      db.execute("DELETE FROM nodes WHERE node_id LIKE '!aaaa%' OR node_id LIKE '!bbbb%' OR node_id LIKE '!cccc%' OR node_id LIKE '!dddd%'")
+    end
+  end
+
+  describe "POST /api/telemetry-requests" do
+    it "404s when the feature flag is off" do
+      with_feature(enabled: "0") do
+        post "/api/telemetry-requests", { nodeId: "!abcd0001" }.to_json, json_headers
+        expect(last_response.status).to eq(404)
+      end
+    end
+
+    it "404s when the hourly cap disables accepts" do
+      with_feature(cap: "0") do
+        post "/api/telemetry-requests", { nodeId: "!abcd0001" }.to_json, json_headers
+        expect(last_response.status).to eq(404)
+      end
+    end
+
+    it "rejects invalid JSON and payload shapes" do
+      with_feature do
+        post "/api/telemetry-requests", "{", json_headers
+        expect(last_response.status).to eq(400)
+        post "/api/telemetry-requests", [1].to_json, json_headers
+        expect(last_response.status).to eq(400)
+        post "/api/telemetry-requests", { nodeId: "%%%" }.to_json, json_headers
+        expect(last_response.status).to eq(400)
+      end
+    end
+
+    it "404s for unknown nodes and 422s for non-meshcore nodes" do
+      with_feature do
+        post "/api/telemetry-requests", { nodeId: "!00000000" }.to_json, json_headers
+        expect(last_response.status).to eq(404)
+
+        seed_node("!aaaa0001", "meshtastic")
+        post "/api/telemetry-requests", { nodeId: "!aaaa0001" }.to_json, json_headers
+        expect(last_response.status).to eq(422)
+      end
+    end
+
+    it "accepts a meshcore node with 202, then 429s inside the cooldown" do
+      with_feature do
+        seed_node("!bbbb0001", "meshcore")
+        post "/api/telemetry-requests", { nodeId: "!bbbb0001" }.to_json, json_headers
+        expect(last_response.status).to eq(202)
+        body = JSON.parse(last_response.body)
+        expect(body["cooldownSeconds"]).to eq(900)
+
+        post "/api/telemetry-requests", { nodeId: "!bbbb0001" }.to_json, json_headers
+        expect(last_response.status).to eq(429)
+        expect(last_response.headers["Retry-After"].to_i).to be_between(1, 900)
+      end
+    end
+
+    it "429s when the global hourly cap is exhausted" do
+      with_feature(cap: "1") do
+        seed_node("!cccc0001", "meshcore")
+        seed_node("!cccc0002", "meshcore")
+        post "/api/telemetry-requests", { nodeId: "!cccc0001" }.to_json, json_headers
+        expect(last_response.status).to eq(202)
+        post "/api/telemetry-requests", { nodeId: "!cccc0002" }.to_json, json_headers
+        expect(last_response.status).to eq(429)
+        expect(last_response.headers["Retry-After"]).to eq("3600")
+      end
+    end
+
+    it "accepts in private mode (telemetry is not privacy-gated)" do
+      original = ENV["PRIVATE"]
+      ENV["PRIVATE"] = "1"
+      with_feature do
+        seed_node("!dddd0001", "meshcore")
+        post "/api/telemetry-requests", { nodeId: "!dddd0001" }.to_json, json_headers
+        expect(last_response.status).to eq(202)
+      end
+    ensure
+      original.nil? ? ENV.delete("PRIVATE") : ENV["PRIVATE"] = original
+    end
+  end
 
   it "inserts and reports the per-node cooldown remainder" do
     now = Time.now.to_i
