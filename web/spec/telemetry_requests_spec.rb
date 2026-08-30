@@ -245,4 +245,22 @@ RSpec.describe "Telemetry request storage" do
       end
     end
   end
+
+  describe "frontend app config flag" do
+    it "serialises telemetryRequestsEnabled into data-app-config" do
+      with_feature do
+        get "/"
+        expect(last_response.status).to eq(200)
+        expect(last_response.body).to include(
+          Rack::Utils.escape_html('"telemetryRequestsEnabled":true'),
+        )
+      end
+      with_feature(enabled: "0") do
+        get "/"
+        expect(last_response.body).to include(
+          Rack::Utils.escape_html('"telemetryRequestsEnabled":false'),
+        )
+      end
+    end
+  end
 end

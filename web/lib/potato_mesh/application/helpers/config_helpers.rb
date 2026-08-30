@@ -64,6 +64,7 @@ module PotatoMesh
           maxDistanceKm: PotatoMesh::Config.max_distance_km,
           instanceDomain: app_constant(:INSTANCE_DOMAIN),
           instancesFeatureEnabled: federation_enabled? && !private_mode?,
+          telemetryRequestsEnabled: PotatoMesh::Config.telemetry_requests_enabled?,
         }
       end
 
