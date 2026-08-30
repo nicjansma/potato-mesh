@@ -2125,13 +2125,18 @@ def test_telemetry_poll_loop_disabled_and_ticking(monkeypatch):
 
     monkeypatch.setattr(_mesh_pkg, "handlers", stub)
 
-    # Both cadences disabled → the loop returns immediately.
+    # All three cadences disabled → the loop returns immediately.  The claim
+    # cadence has no MESHCORE_* knob of its own (it tracks transmit_permitted()
+    # directly), so TX_ENABLED must also be off here or claim_interval alone
+    # would keep the loop running.
     monkeypatch.setattr(mc_tel.config, "MESHCORE_SELF_TELEMETRY_SECONDS", 0)
     monkeypatch.setattr(mc_tel.config, "MESHCORE_TELEMETRY_POLL_SECONDS", 0)
+    monkeypatch.setattr(mc_tel.config, "TX_ENABLED", False)
     asyncio.run(mc_tel._telemetry_poll_loop(types.SimpleNamespace(), iface))
 
     # Enabled: run the loop as a task, let the immediate self tick and the
     # (shortened) contact tick fire, then cancel.
+    monkeypatch.setattr(mc_tel.config, "TX_ENABLED", True)
     calls = {"self": 0, "contact": 0}
 
     class _Commands:

@@ -14,12 +14,15 @@
 
 """Unit tests for the MeshCore on-demand telemetry claim client."""
 
+import asyncio
 import io
 import json
+import time
 import urllib.error
 
 import data.mesh_ingestor.protocols.meshcore.telemetry_requests as mc_req
 from data.mesh_ingestor.protocols.meshcore.interface import _MeshcoreInterface
+from test_provider_unit import _telemetry_env, _TEST_CONTACT_KEY
 
 _KEY = "aabbccddeeff" + "00" * 26
 
@@ -222,3 +225,64 @@ def test_find_roster_contact_matches_and_misses():
     contact = mc_req._find_roster_contact(iface, "!aabbccdd")
     assert contact is not None and contact["public_key"] == _KEY
     assert mc_req._find_roster_contact(iface, "!00000000") is None
+
+
+def test_execute_claimed_request_pulls_and_stamps_cooldown(monkeypatch):
+    """A claimed request resolves its contact, pulls telemetry, and stamps the cooldown."""
+    mc_tel_env = _telemetry_env(
+        monkeypatch, contacts=[{"public_key": _TEST_CONTACT_KEY, "adv_name": "Sensor"}]
+    )
+    mc_tel, iface, stub, captured = mc_tel_env
+    node_id = iface.lookup_node_id(_TEST_CONTACT_KEY[:12])
+
+    class _Cmds:
+        async def req_telemetry_sync(self, _contact):
+            return [{"type": "temperature", "value": 20.0}]
+
+    class _MC:
+        commands = _Cmds()
+
+    state: dict = {}
+    asyncio.run(
+        mc_tel._execute_claimed_request(
+            _MC(), iface, stub, state, {"id": 1, "nodeId": node_id}
+        )
+    )
+    assert captured  # telemetry queued through the normal pipeline
+    assert _TEST_CONTACT_KEY in state["last_polled"]  # 24 h stamp applied
+
+
+def test_execute_claimed_request_drops_unknown_contacts(monkeypatch):
+    """A claimed request for a node outside the roster is dropped without side effects."""
+    mc_tel, iface, stub, captured = _telemetry_env(monkeypatch, contacts=[])
+    state: dict = {}
+    asyncio.run(
+        mc_tel._execute_claimed_request(
+            object(), iface, stub, state, {"id": 1, "nodeId": "!00000000"}
+        )
+    )
+    assert captured == [] and state == {}
+
+
+def test_claim_and_execute_returns_backoff_when_feature_off(monkeypatch):
+    """The next claim delay backs off to the long interval once every instance 404s."""
+    mc_tel, iface, stub, _captured = _telemetry_env(monkeypatch, contacts=[])
+    monkeypatch.setattr(
+        mc_tel.telemetry_requests,
+        "_claim_telemetry_request",
+        lambda: (None, False),
+    )
+    delay = asyncio.run(mc_tel._claim_and_execute(object(), iface, stub, {}))
+    assert delay == mc_tel.telemetry_requests._CLAIM_BACKOFF_SECONDS
+
+
+def test_claim_and_execute_returns_poll_interval_when_feature_on(monkeypatch):
+    """The next claim delay stays at the regular interval while the feature answers."""
+    mc_tel, iface, stub, _captured = _telemetry_env(monkeypatch, contacts=[])
+    monkeypatch.setattr(
+        mc_tel.telemetry_requests,
+        "_claim_telemetry_request",
+        lambda: (None, True),
+    )
+    delay = asyncio.run(mc_tel._claim_and_execute(object(), iface, stub, {}))
+    assert delay == mc_tel.telemetry_requests._CLAIM_POLL_SECONDS

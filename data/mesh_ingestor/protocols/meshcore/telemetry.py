@@ -36,6 +36,7 @@ import time
 from collections.abc import Mapping
 
 from ... import activity, config, tx_policy
+from . import telemetry_requests
 from .interface import _MeshcoreInterface
 from .messages import _derive_message_id
 
@@ -517,6 +518,63 @@ async def _poll_contact_telemetry(
     await _request_contact_telemetry(mc, iface, handlers, contact, node_id)
 
 
+async def _execute_claimed_request(mc, iface, handlers, state, request) -> None:
+    """Execute one claimed on-demand telemetry request (TI-A3 extension).
+
+    Resolves the roster contact for the request's node, stamps the background
+    loop's 24 h per-node cooldown *before* transmitting (mirroring
+    :func:`_next_poll_contact` so a failed pull is not retried by the
+    round-robin either), and delegates to the shared, MA7-gated pull.
+    Requests for nodes outside the roster are dropped with a debug line —
+    the web app offers the button for every MeshCore node it knows.
+
+    Parameters:
+        mc: Connected MeshCore instance.
+        iface: Active interface (roster + node-id resolution).
+        handlers: The ``data.mesh_ingestor.handlers`` module.
+        state: Mutable poll-loop state (shares ``last_polled`` stamps).
+        request: Claimed request mapping (``nodeId`` key).
+    """
+    node_id = request.get("nodeId")
+    if not isinstance(node_id, str) or not node_id:
+        return
+    contact = telemetry_requests._find_roster_contact(iface, node_id)
+    if contact is None:
+        config._debug_log(
+            "MeshCore telemetry request for unknown contact dropped",
+            context="meshcore.telemetry.request",
+            node_id=node_id,
+        )
+        return
+    state.setdefault("last_polled", {})[contact.get("public_key")] = time.monotonic()
+    await _request_contact_telemetry(mc, iface, handlers, contact, node_id)
+
+
+async def _claim_and_execute(mc, iface, handlers, state) -> float:
+    """Poll the claim endpoint once and execute any claimed request.
+
+    The blocking HTTP claim runs in a worker thread so the event loop stays
+    responsive.  Returns the delay until the next claim poll: the regular
+    interval while any instance serves the feature, the long backoff when
+    every instance 404s (feature disabled server-side).
+
+    Parameters mirror :func:`_execute_claimed_request`.
+
+    Returns:
+        Seconds until the next claim poll.
+    """
+    claimed, feature_seen = await asyncio.to_thread(
+        telemetry_requests._claim_telemetry_request
+    )
+    if claimed is not None:
+        await _execute_claimed_request(mc, iface, handlers, state, claimed)
+    return (
+        telemetry_requests._CLAIM_POLL_SECONDS
+        if feature_seen
+        else telemetry_requests._CLAIM_BACKOFF_SECONDS
+    )
+
+
 async def _telemetry_poll_loop(mc, iface: _MeshcoreInterface) -> None:
     """Drive periodic self and contact telemetry collection until cancelled.
 
@@ -528,8 +586,15 @@ async def _telemetry_poll_loop(mc, iface: _MeshcoreInterface) -> None:
     policy (:func:`~data.mesh_ingestor.tx_policy.transmit_permitted` — off unless
     ``TX_ENABLED=1``) disables the on-air contact polls regardless of the poll
     interval; the self reads are local companion-link commands, cost no airtime,
-    and stay active.  The loop wakes once per
-    second-granularity deadline rather than busy-polling.
+    and stay active.  A third cadence polls the on-demand telemetry-request
+    claim endpoint (:func:`_claim_and_execute`, TI-A3) at
+    :data:`~.telemetry_requests._CLAIM_POLL_SECONDS` (backing off to
+    :data:`~.telemetry_requests._CLAIM_BACKOFF_SECONDS` once every instance
+    reports the feature off); like the contact poll, the claim step's
+    resulting transmission is gated behind
+    :func:`~data.mesh_ingestor.tx_policy.transmit_permitted`, so the claim
+    poll itself is only scheduled while that gate is open (MA7). The loop
+    wakes once per second-granularity deadline rather than busy-polling.
 
     Parameters:
         mc: Connected MeshCore instance.
@@ -541,7 +606,10 @@ async def _telemetry_poll_loop(mc, iface: _MeshcoreInterface) -> None:
     poll_interval = (
         config.MESHCORE_TELEMETRY_POLL_SECONDS if tx_policy.transmit_permitted() else 0
     )
-    if self_interval <= 0 and poll_interval <= 0:
+    claim_interval = (
+        telemetry_requests._CLAIM_POLL_SECONDS if tx_policy.transmit_permitted() else 0
+    )
+    if self_interval <= 0 and poll_interval <= 0 and claim_interval <= 0:
         return
 
     state: dict = {}
@@ -549,6 +617,7 @@ async def _telemetry_poll_loop(mc, iface: _MeshcoreInterface) -> None:
     # Delay the first on-air poll by one full interval so a restart storm
     # cannot burst-request the roster.
     next_poll = time.monotonic() + poll_interval if poll_interval > 0 else None
+    next_claim = time.monotonic() + claim_interval if claim_interval > 0 else None
     while True:
         now = time.monotonic()
         if next_self is not None and now >= next_self:
@@ -557,5 +626,8 @@ async def _telemetry_poll_loop(mc, iface: _MeshcoreInterface) -> None:
         if next_poll is not None and now >= next_poll:
             await _poll_contact_telemetry(mc, iface, _handlers, state)
             next_poll = now + poll_interval
-        deadlines = [d for d in (next_self, next_poll) if d is not None]
+        if next_claim is not None and now >= next_claim:
+            delay = await _claim_and_execute(mc, iface, _handlers, state)
+            next_claim = time.monotonic() + delay
+        deadlines = [d for d in (next_self, next_poll, next_claim) if d is not None]
         await asyncio.sleep(max(1.0, min(deadlines) - time.monotonic()))
