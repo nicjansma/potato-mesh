@@ -2313,6 +2313,38 @@ def test_telemetry_poll_loop_rx_only_disables_on_air_polls(monkeypatch):
     asyncio.run(mc_tel._telemetry_poll_loop(types.SimpleNamespace(), iface))
 
 
+def test_request_contact_telemetry_pull_with_status_fallback(monkeypatch):
+    """The extracted single-contact pull gates, counts, and falls back."""
+    mc_tel, iface, stub, captured = _telemetry_env(
+        monkeypatch, contacts=[{"public_key": _TEST_CONTACT_KEY, "adv_name": "Sensor"}]
+    )
+    contact = {"public_key": _TEST_CONTACT_KEY, "adv_name": "Sensor"}
+
+    class _Cmds:
+        async def req_telemetry_sync(self, _contact):
+            return None  # timeout → falls back to status
+
+        async def req_status_sync(self, _contact):
+            return {"bat": 4056}
+
+    class _MC:
+        commands = _Cmds()
+
+    ok = asyncio.run(
+        mc_tel._request_contact_telemetry(_MC(), iface, stub, contact, "!11223344")
+    )
+    assert ok is True
+    assert captured[0]["decoded"]["telemetry"]["deviceMetrics"] == {"voltage": 4.056}
+
+    # Transmission forbidden → nothing sent, nothing queued.
+    monkeypatch.setattr(mc_tel.config, "TX_ENABLED", False)
+    captured.clear()
+    ok = asyncio.run(
+        mc_tel._request_contact_telemetry(_MC(), iface, stub, contact, "!11223344")
+    )
+    assert ok is False and captured == []
+
+
 def test_on_channel_msg_queues_packet(monkeypatch):
     """on_channel_msg must call store_packet_dict with the correct packet fields."""
     import asyncio

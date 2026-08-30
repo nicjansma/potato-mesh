@@ -398,38 +398,42 @@ async def _poll_self_telemetry(mc, iface: _MeshcoreInterface, handlers: object) 
         )
 
 
-async def _poll_contact_telemetry(
-    mc, iface: _MeshcoreInterface, handlers: object, state: dict
-) -> None:
-    """Send one on-air telemetry pull to the next roster contact.
+async def _request_contact_telemetry(
+    mc, iface: _MeshcoreInterface, handlers: object, contact: dict, node_id: str
+) -> bool:
+    """Send one gated telemetry-then-status pull to an already-resolved contact.
 
     Falls back to a status request when the telemetry pull yields nothing, so
-    sensor-less nodes still report battery/uptime.  One contact per call keeps
-    airtime bounded to a single request per poll interval regardless of roster
-    size; the meshcore library serialises mesh requests internally.  Both ends
-    of the attempt emit a ``meshcore.telemetry.poll`` debug line — one when the
-    request is initiated, one when neither the telemetry nor the status request
-    returned usable data — because ``req_*_sync`` return ``None`` on timeout
-    without raising, which would otherwise leave an unanswered poll
-    indistinguishable from a disabled poll loop.
+    sensor-less nodes still report battery/uptime.  Shared by two callers: the
+    background round-robin (:func:`_poll_contact_telemetry`), which already
+    resolved ``contact``/``node_id`` for the day's due entry, and the
+    on-demand "Request telemetry" claim path, which resolves a single
+    operator-picked contact.  Both ends of the attempt emit a
+    ``meshcore.telemetry.poll`` debug line — one when the request is
+    initiated, one when neither the telemetry nor the status request returned
+    usable data — because ``req_*_sync`` return ``None`` on timeout without
+    raising, which would otherwise leave an unanswered poll indistinguishable
+    from a disabled poll loop.
 
     Parameters:
         mc: Connected MeshCore instance.
-        iface: Active interface (roster + node-id resolution).
+        iface: Active interface (unused directly here; kept for parity with
+            the other poll helpers and to leave room for future
+            interface-scoped checks without changing the call signature).
         handlers: The ``data.mesh_ingestor.handlers`` module.
-        state: Mutable poll-loop state (round-robin cursor).
+        contact: Roster contact dict to poll.
+        node_id: Canonical node id the contact resolves to.
+
+    Returns:
+        ``True`` when a telemetry or status packet was queued, ``False`` when
+        transmission was not permitted or every request failed/timed out.
     """
-    # Checked at each transmit site beside its record_tx, as well as at loop
-    # entry: the loop resolves the poll interval once at startup, so a policy
-    # read later must still be honoured by the request that is about to go out.
+    # The caller may have resolved contact/node_id some time before this runs
+    # (e.g. queued behind another in-flight request), so the gate is checked
+    # here rather than trusted from the caller — one gate per transmit site,
+    # beside that site's record_tx.
     if not tx_policy.transmit_permitted():
-        return
-    contact = _next_poll_contact(iface, state)
-    if contact is None:
-        return
-    node_id = iface.lookup_node_id((contact.get("public_key") or "")[:12])
-    if node_id is None:
-        return
+        return False
     # Log before the request goes out: req_*_sync return None on timeout without
     # raising, so an unanswered poll is otherwise silent.
     config._debug_log(
@@ -448,16 +452,16 @@ async def _poll_contact_telemetry(
             node_id=node_id,
             error=str(exc),
         )
-        return
+        return False
     if _queue_meshcore_telemetry(
         handlers, node_id, _lpp_to_telemetry_section(lpp), "lpp"
     ):
-        return
+        return True
     # The status fallback is a second, independent transmission, so it takes its
     # own permission check rather than riding the one above: one gate per
     # transmit site, beside that site's record_tx.
     if not tx_policy.transmit_permitted():
-        return
+        return False
     try:
         # The status fallback is a second on-air pull — count it too (MA1).
         activity.record_tx()
@@ -469,16 +473,48 @@ async def _poll_contact_telemetry(
             node_id=node_id,
             error=str(exc),
         )
-        return
+        return False
     if _queue_meshcore_telemetry(
         handlers, node_id, _status_to_telemetry_section(status), "status"
     ):
-        return
+        return True
     config._debug_log(
         "MeshCore contact telemetry poll returned no data",
         context="meshcore.telemetry.poll",
         node_id=node_id,
     )
+    return False
+
+
+async def _poll_contact_telemetry(
+    mc, iface: _MeshcoreInterface, handlers: object, state: dict
+) -> None:
+    """Pick the next due roster contact and pull its telemetry, round-robin.
+
+    One contact per call keeps airtime bounded to a single request per poll
+    interval regardless of roster size; the meshcore library serialises mesh
+    requests internally.  The actual pull (gate, request, status fallback) is
+    delegated to :func:`_request_contact_telemetry`, which is also reused by
+    the on-demand "Request telemetry" claim path.
+
+    Parameters:
+        mc: Connected MeshCore instance.
+        iface: Active interface (roster + node-id resolution).
+        handlers: The ``data.mesh_ingestor.handlers`` module.
+        state: Mutable poll-loop state (round-robin cursor).
+    """
+    # Checked at each transmit site beside its record_tx, as well as at loop
+    # entry: the loop resolves the poll interval once at startup, so a policy
+    # read later must still be honoured by the request that is about to go out.
+    if not tx_policy.transmit_permitted():
+        return
+    contact = _next_poll_contact(iface, state)
+    if contact is None:
+        return
+    node_id = iface.lookup_node_id((contact.get("public_key") or "")[:12])
+    if node_id is None:
+        return
+    await _request_contact_telemetry(mc, iface, handlers, contact, node_id)
 
 
 async def _telemetry_poll_loop(mc, iface: _MeshcoreInterface) -> None:
