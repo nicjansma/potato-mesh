@@ -98,6 +98,16 @@ test('failures re-enable the button for a retry', async () => {
   assert.ok(button.textContent.includes('failed'));
 });
 
+test('non-202/429 statuses show failure and re-enable the button', async () => {
+  const button = fakeButton('!abcd0001');
+  bindTelemetryRequestButtons(fakeContainer([button]), {
+    fetchImpl: async () => fakeResponse(500),
+  });
+  await button.click();
+  assert.equal(button.disabled, false);
+  assert.ok(button.textContent.includes('failed'));
+});
+
 test('bind tolerates a container without matches and a missing fetch', () => {
   assert.equal(bindTelemetryRequestButtons(null, {}), 0);
   assert.equal(bindTelemetryRequestButtons(fakeContainer([]), {}), 0);
