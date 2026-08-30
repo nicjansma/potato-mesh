@@ -50,6 +50,8 @@ export {
 import { escapeHtml } from './utils.js';
 export { escapeHtml };
 
+import { readAppConfig } from './config.js';
+
 import { computeBoundingBox, computeBoundsForPoints, haversineDistanceKm } from './map-bounds.js';
 import {
   buildRenderableEntries,
@@ -2288,6 +2290,7 @@ export function initializeApp(config) {
           nodeDetailOverlayManager = createNodeDetailOverlayManager({
             document,
             privateMode: isPrivateMode,
+            telemetryRequestsEnabled: readAppConfig().telemetryRequestsEnabled === true,
           });
           return nodeDetailOverlayManager;
         })

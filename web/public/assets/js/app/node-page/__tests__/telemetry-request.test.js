@@ -21,6 +21,7 @@ import {
   renderTelemetryRequestButton,
   bindTelemetryRequestButtons,
 } from '../telemetry-request.js';
+import { renderNodeDetailHtml } from '../detail-html.js';
 
 const MESHCORE_NODE = { nodeId: '!abcd0001', protocol: 'meshcore' };
 
@@ -111,4 +112,21 @@ test('non-202/429 statuses show failure and re-enable the button', async () => {
 test('bind tolerates a container without matches and a missing fetch', () => {
   assert.equal(bindTelemetryRequestButtons(null, {}), 0);
   assert.equal(bindTelemetryRequestButtons(fakeContainer([]), {}), 0);
+});
+
+const RENDER_OPTS = {
+  renderShortHtml: value => String(value ?? ''),
+  telemetryRequestsEnabled: true,
+};
+
+test('renderNodeDetailHtml embeds the button for meshcore nodes when enabled', () => {
+  const html = renderNodeDetailHtml(MESHCORE_NODE, RENDER_OPTS);
+  assert.ok(html.includes('data-telemetry-request="!abcd0001"'));
+});
+
+test('renderNodeDetailHtml omits the button when disabled or non-meshcore', () => {
+  const disabled = renderNodeDetailHtml(MESHCORE_NODE, { ...RENDER_OPTS, telemetryRequestsEnabled: false });
+  assert.ok(!disabled.includes('data-telemetry-request'));
+  const meshtastic = renderNodeDetailHtml({ nodeId: '!ff00ff00', protocol: 'meshtastic' }, RENDER_OPTS);
+  assert.ok(!meshtastic.includes('data-telemetry-request'));
 });
