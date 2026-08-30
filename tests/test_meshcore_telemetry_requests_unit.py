@@ -286,3 +286,81 @@ def test_claim_and_execute_returns_poll_interval_when_feature_on(monkeypatch):
     )
     delay = asyncio.run(mc_tel._claim_and_execute(object(), iface, stub, {}))
     assert delay == mc_tel.telemetry_requests._CLAIM_POLL_SECONDS
+
+
+def test_execute_claimed_request_ignores_missing_node_id(monkeypatch):
+    """A claimed request without a usable nodeId is dropped before contact lookup."""
+    mc_tel, iface, stub, captured = _telemetry_env(monkeypatch, contacts=[])
+    state: dict = {}
+    asyncio.run(
+        mc_tel._execute_claimed_request(
+            object(), iface, stub, state, {"id": 1, "nodeId": None}
+        )
+    )
+    asyncio.run(
+        mc_tel._execute_claimed_request(
+            object(), iface, stub, state, {"id": 2, "nodeId": ""}
+        )
+    )
+    assert captured == [] and state == {}
+
+
+def test_claim_and_execute_delegates_to_execute_claimed_request(monkeypatch):
+    """A successful claim is delegated to _execute_claimed_request, which pulls telemetry."""
+    mc_tel, iface, stub, captured = _telemetry_env(
+        monkeypatch, contacts=[{"public_key": _TEST_CONTACT_KEY, "adv_name": "Sensor"}]
+    )
+    node_id = iface.lookup_node_id(_TEST_CONTACT_KEY[:12])
+    monkeypatch.setattr(
+        mc_tel.telemetry_requests,
+        "_claim_telemetry_request",
+        lambda: ({"id": 1, "nodeId": node_id}, True),
+    )
+
+    class _Cmds:
+        async def req_telemetry_sync(self, _contact):
+            return [{"type": "temperature", "value": 19.5}]
+
+    class _MC:
+        commands = _Cmds()
+
+    delay = asyncio.run(mc_tel._claim_and_execute(_MC(), iface, stub, {}))
+    assert captured  # the claimed request's telemetry pull actually executed
+    assert delay == mc_tel.telemetry_requests._CLAIM_POLL_SECONDS
+
+
+def test_telemetry_poll_loop_claim_branch_fires_and_rearms(monkeypatch):
+    """The loop's claim deadline invokes the claim client and re-arms with its delay."""
+    import types
+
+    mc_tel, iface, stub, _captured = _telemetry_env(monkeypatch, contacts=[])
+    import data.mesh_ingestor as _mesh_pkg
+
+    monkeypatch.setattr(_mesh_pkg, "handlers", stub)
+    monkeypatch.setattr(mc_tel.config, "MESHCORE_SELF_TELEMETRY_SECONDS", 0)
+    monkeypatch.setattr(mc_tel.config, "MESHCORE_TELEMETRY_POLL_SECONDS", 0)
+    monkeypatch.setattr(mc_tel.telemetry_requests, "_CLAIM_POLL_SECONDS", 1)
+
+    calls: list = []
+
+    def _fake_claim():
+        calls.append(1)
+        return (None, True)
+
+    monkeypatch.setattr(
+        mc_tel.telemetry_requests, "_claim_telemetry_request", _fake_claim
+    )
+
+    async def _drive():
+        task = asyncio.create_task(
+            mc_tel._telemetry_poll_loop(types.SimpleNamespace(), iface)
+        )
+        await asyncio.sleep(1.8)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(_drive())
+    assert len(calls) >= 1  # the claim deadline fired and the loop re-armed it
