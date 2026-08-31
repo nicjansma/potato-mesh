@@ -49,6 +49,8 @@ export function scrollToHashTarget(documentRef) {
   target.scrollIntoView();
   return true;
 }
+import { bindTelemetryRequestButtons } from './telemetry-request.js';
+import { readAppConfig } from '../config.js';
 import { startRelativeTimeTicker } from '../main/relative-time-ticker.js';
 
 const RENDER_WAIT_INTERVAL_MS = 20;
@@ -120,6 +122,7 @@ export async function resolveRenderShortHtml(override) {
  *   refreshImpl?: Function,
  *   renderShortHtml?: Function,
  *   privateMode?: boolean,
+ *   telemetryRequestsEnabled?: boolean,
  * }} [options] Optional overrides for testing.
  * @returns {Promise<string>} HTML fragment for the detail view.
  */
@@ -174,6 +177,7 @@ export async function fetchNodeDetailHtml(referenceData, options = {}) {
     renderShortHtml,
     roleIndex,
     nodesById,
+    telemetryRequestsEnabled: options.telemetryRequestsEnabled === true,
   });
 }
 
@@ -238,6 +242,16 @@ export async function initializeNodeDetailPage(options = {}) {
 
   const refreshImpl = typeof options.refreshImpl === 'function' ? options.refreshImpl : refreshNodeInformation;
   const privateMode = (root.dataset?.privateMode ?? '').toLowerCase() === 'true';
+  // readAppConfig() reads the global `document` (not the injectable
+  // `documentRef` above); guard it so tests that exercise this function with
+  // only a fake `options.document` — and no global `document` at all — don't
+  // fail with a ReferenceError before the feature flag even matters.
+  let telemetryRequestsEnabled = false;
+  try {
+    telemetryRequestsEnabled = readAppConfig().telemetryRequestsEnabled === true;
+  } catch {
+    telemetryRequestsEnabled = false;
+  }
 
   try {
     const html = await fetchNodeDetailHtml(referenceData, {
@@ -245,6 +259,7 @@ export async function initializeNodeDetailPage(options = {}) {
       refreshImpl,
       renderShortHtml: options.renderShortHtml,
       privateMode,
+      telemetryRequestsEnabled,
     });
     root.innerHTML = html;
     // The destinations table is built after several awaited fetches, so the
@@ -253,6 +268,7 @@ export async function initializeNodeDetailPage(options = {}) {
     // otherwise a destination link lands at the top of the page instead of on
     // the row it names.
     scrollToHashTarget(documentRef);
+    bindTelemetryRequestButtons(root, { fetchImpl: options.fetchImpl });
     // One shared presentation clock keeps the rendered last-seen /
     // last-position ages counting up in place (SPEC RT1/RT2); re-initialising
     // replaces the previous ticker so the page never runs two clocks.

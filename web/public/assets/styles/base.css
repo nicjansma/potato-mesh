@@ -1358,6 +1358,23 @@ body.view-chat .page-shell {
   font-size: 1.2rem;
 }
 
+.node-detail__telemetry-request {
+  margin: 0.4rem 0 0;
+  padding: 0.25rem 0.7rem;
+  font: inherit;
+  font-size: 0.85rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.node-detail__telemetry-request:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 .node-detail__table {
   margin: 20px 0 32px;
   overflow-x: auto;

@@ -15,6 +15,7 @@
  */
 
 import { fetchNodeDetailHtml } from './node-page.js';
+import { bindTelemetryRequestButtons } from './node-page/telemetry-request.js';
 
 /**
  * Escape a string for safe HTML injection.
@@ -69,6 +70,7 @@ function hasValidReference(reference) {
  *   refreshImpl?: Function,
  *   renderShortHtml?: Function,
  *   privateMode?: boolean,
+ *   telemetryRequestsEnabled?: boolean,
  *   logger?: Console
  * }} [options] Behaviour overrides.
  * @returns {{
@@ -101,6 +103,7 @@ export function createNodeDetailOverlayManager(options = {}) {
   const fetchImpl = options.fetchImpl;
   const refreshImpl = options.refreshImpl;
   const renderShortHtml = options.renderShortHtml;
+  const telemetryRequestsEnabled = options.telemetryRequestsEnabled === true;
 
   let requestToken = 0;
   let lastTrigger = null;
@@ -203,11 +206,13 @@ export function createNodeDetailOverlayManager(options = {}) {
         refreshImpl,
         renderShortHtml,
         privateMode,
+        telemetryRequestsEnabled,
       });
       if (currentToken !== requestToken) {
         return;
       }
       content.innerHTML = html;
+      bindTelemetryRequestButtons(content, { fetchImpl });
       if (typeof closeButton.focus === 'function') {
         closeButton.focus();
       }

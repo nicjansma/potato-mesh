@@ -31,6 +31,7 @@ import { renderMessages } from './messages.js';
 import { renderTraceroutes } from './traces.js';
 import { renderWaypointsSection } from './waypoints.js';
 import { renderDestinationsSection } from './destinations.js';
+import { renderTelemetryRequestButton } from './telemetry-request.js';
 
 /**
  * Render the node detail layout to an HTML fragment.
@@ -45,6 +46,7 @@ import { renderDestinationsSection } from './destinations.js';
  *   roleIndex?: Object|null,
  *   chartNowMs?: number,
  *   nodesById?: Map<string, Object>|null,
+ *   telemetryRequestsEnabled?: boolean,
  * }} options Rendering options.
  * @returns {string} HTML fragment representing the detail view.
  */
@@ -58,6 +60,7 @@ export function renderNodeDetailHtml(node, {
   roleIndex = null,
   chartNowMs = Date.now(),
   nodesById = null,
+  telemetryRequestsEnabled = false,
 } = {}) {
   const roleAwareBadge = renderRoleAwareBadge(renderShortHtml, {
     shortName: node.shortName ?? node.short_name,
@@ -109,10 +112,11 @@ export function renderNodeDetailHtml(node, {
   const badgeHtml = `<span class="node-detail__badge">${roleAwareBadge}</span>`;
   const tableSection = tableHtml ? `<div class="node-detail__table">${tableHtml}</div>` : '';
   const contentHtml = sections.length > 0 ? `<div class="node-detail__content">${sections.join('')}</div>` : '';
+  const telemetryButtonHtml = renderTelemetryRequestButton(node, { enabled: telemetryRequestsEnabled });
 
   return `
     <header class="node-detail__header">
-      <h2 class="node-detail__title">${badgeHtml}${nameHtml}${identifierHtml}</h2>
+      <h2 class="node-detail__title">${badgeHtml}${nameHtml}${identifierHtml}</h2>${telemetryButtonHtml}
     </header>
     ${chartsHtml ?? ''}
     ${tableSection}

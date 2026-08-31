@@ -1564,3 +1564,18 @@ three protocols instead of Reticulum having its own.
 | **RL5** | **A destination's identifier links to its identity page.** RA5 specified that `/nodes/!<destination>` canonicalises to the owning identity, and the route does — but nothing in the UI ever emitted that link, so the behaviour was reachable only by typing a URL. The `[!xxxxxxxx]` in a table sub-row and the destination hash on the identity page become links, and the identity page's destination rows carry anchors so a link lands on the row it names. A claim in the spec that no interface exercises is indistinguishable from a claim that is false. | review follow-up |
 
 | **RL6** | **`destinations` is a retention target.** The table carries no foreign key to `nodes`, so nothing cascaded when a node was purged and a destination row outlived it indefinitely — invisible to every view except an unfiltered `GET /api/destinations`, in a table that only grew. It is swept on `last_heard`, the same column its node uses, so the two age out together. Delete order is immaterial precisely because there is no constraint between them. | operator report |
+## Feature: On-demand telemetry requests from the UI (MeshCore)
+
+Viewer-facing button on MeshCore node detail views queueing an on-air
+`req_telemetry` pull, executed by the MeshCore ingestor through the same
+gated path as the background poll loop (TI-A3). Design record:
+`docs/superpowers/specs/2026-08-29-telemetry-request-button-design.md`.
+
+| # | Decision | Source |
+|---|----------|--------|
+| **TQ1** | **Hidden unless enabled.** The whole feature — both routes and the button — exists only when the web operator sets `TELEMETRY_REQUESTS=1` (default `0`). Flag off ⇒ both routes 404 and the flag serialises `false` into the frontend config. The claim route's token gate runs before the flag check — unauthenticated probes get 403 regardless of flag state. | interview |
+| **TQ2** | **Fire-and-forget UX.** A click gets an immediate 202; results arrive through the unchanged telemetry ingest → SSE pipeline. No request-lifecycle tracking crosses the web/ingestor boundary. | interview |
+| **TQ3** | **Rate limits: configurable per-node cooldown (floor 300 s) + global hourly cap.** `TELEMETRY_REQUEST_COOLDOWN_SECONDS` (default 900) clamps up to a 300 s floor — fail-safe toward less airtime; `TELEMETRY_REQUEST_HOURLY_CAP` (default 12, `<= 0` disables accepts). An executed on-demand pull also stamps the background loop's 24 h per-node cooldown so the round-robin does not re-poll the same node. | interview |
+| **TQ4** | **Pull-only claim channel, MA7 intact.** The ingestor polls a token-guarded atomic claim route (~30 s; 5 min backoff while every instance 404s) from inside the existing telemetry poll loop — no broker, no push, apex invariant untouched. Every transmission still passes `tx_policy.transmit_permitted()` at the send site; with `TX_ENABLED=0` accepted requests simply expire unclaimed (600 s claim window). | interview |
+| **TQ5** | **All MeshCore nodes show the button; the ingestor validates the roster.** The web app cannot know roster membership, so requests for non-contacts are claimed and dropped with a debug log rather than gated in the UI. | interview |
+| **TQ6** | **Engineering bar (D9).** 100 % unit tests across all three languages (route gates incl. cooldown floor and cap, atomic claim, claim-client error paths and backoff, roster miss, MA7 gate per send, UI render gates and click states), full API docs, Apache headers, `black`/`rufo` clean, CONTRACTS/ACCEPTANCE updated. | CLAUDE.md |

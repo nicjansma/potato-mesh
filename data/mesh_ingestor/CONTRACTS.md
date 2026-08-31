@@ -306,6 +306,35 @@ Heartbeat payload:
 
 **POST response & validation (0.7.0).** Every `POST /api/*` ingest route returns `201 Created` with `{"status":"ok"}` on success (`POST /api/instances` returns `{"status":"registered"}`). A batch route (`messages` / `positions` / `telemetry` / `neighbors` / `traces`) accepts either a single record object or an array of them; any other top-level JSON type is rejected with `400 {"error":"invalid payload"}`, matching the `/api/nodes` and `/api/ingestors` object check. Clients should treat any `2xx` as success.
 
+#### `POST /api/telemetry-requests`
+
+Viewer-facing (no token). Exists only when `TELEMETRY_REQUESTS=1` **and**
+`TELEMETRY_REQUEST_HOURLY_CAP` is `> 0`; otherwise 404 (route indistinguishable
+from absent — setting the cap `<= 0` disables accepts entirely, checked before
+the body is even parsed). Body: `{"nodeId": "!xxxxxxxx"}` (`node_id`
+accepted). Gates in order: parseable JSON object (400), canonical node id
+(400), node known (404), node protocol `meshcore` (422), per-node cooldown
+`TELEMETRY_REQUEST_COOLDOWN_SECONDS` (default 900, floor 300) — 429 with a
+`Retry-After` header and `retryAfterSeconds` field — then the global hourly
+cap (default 12 accepted requests per rolling hour) — also 429, `Retry-After:
+3600`. Success: 202 `{"status":"ok","cooldownSeconds":N}` and one row
+inserted into `telemetry_requests`. Accepted requests are advisory: execution
+requires an ingestor with `TX_ENABLED=1` (SPEC MA7); unclaimed rows expire
+after 600 s.
+
+#### `POST /api/telemetry-requests/claim`
+
+Ingestor-facing (`Authorization: Bearer` ingest token). 404 when the feature
+flag is off. The token gate runs first: without a valid `Authorization: Bearer`
+token the route answers 403 regardless of flag state, so an unauthenticated
+probe learns nothing about the flag. Atomically claims the oldest unclaimed
+request younger than 600 s: 200 `{"id":N,"nodeId":"!xxxxxxxx","requestedAt":N}`,
+or 204 when none pending. The single-UPDATE claim makes co-operating ingestors
+safe — first claimer wins; with multiple MeshCore ingestors, the winning
+claimer may lack the node in its roster and will drop the request (the cooldown
+still applies); run one MeshCore ingestor per instance for reliable on-demand
+delivery. Rows older than 7 days are pruned in the same transaction.
+
 ### GET endpoint filtering
 
 All collection GET endpoints (`/api/nodes`, `/api/messages`, `/api/positions`, `/api/telemetry`, `/api/traces`, `/api/neighbors`, `/api/ingestors`, `/api/waypoints`) accept an optional `?protocol=<value>` query parameter. When present, only records whose `protocol` column matches the given value are returned. The `protocol` field is included in all GET responses.

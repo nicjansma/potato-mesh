@@ -2125,13 +2125,18 @@ def test_telemetry_poll_loop_disabled_and_ticking(monkeypatch):
 
     monkeypatch.setattr(_mesh_pkg, "handlers", stub)
 
-    # Both cadences disabled → the loop returns immediately.
+    # All three cadences disabled → the loop returns immediately.  The claim
+    # cadence has no MESHCORE_* knob of its own (it tracks transmit_permitted()
+    # directly), so TX_ENABLED must also be off here or claim_interval alone
+    # would keep the loop running.
     monkeypatch.setattr(mc_tel.config, "MESHCORE_SELF_TELEMETRY_SECONDS", 0)
     monkeypatch.setattr(mc_tel.config, "MESHCORE_TELEMETRY_POLL_SECONDS", 0)
+    monkeypatch.setattr(mc_tel.config, "TX_ENABLED", False)
     asyncio.run(mc_tel._telemetry_poll_loop(types.SimpleNamespace(), iface))
 
     # Enabled: run the loop as a task, let the immediate self tick and the
     # (shortened) contact tick fire, then cancel.
+    monkeypatch.setattr(mc_tel.config, "TX_ENABLED", True)
     calls = {"self": 0, "contact": 0}
 
     class _Commands:
@@ -2311,6 +2316,38 @@ def test_telemetry_poll_loop_rx_only_disables_on_air_polls(monkeypatch):
     # RX_ONLY with self polling also disabled → the loop exits immediately.
     monkeypatch.setattr(mc_tel.config, "MESHCORE_SELF_TELEMETRY_SECONDS", 0)
     asyncio.run(mc_tel._telemetry_poll_loop(types.SimpleNamespace(), iface))
+
+
+def test_request_contact_telemetry_pull_with_status_fallback(monkeypatch):
+    """The extracted single-contact pull gates, counts, and falls back."""
+    mc_tel, iface, stub, captured = _telemetry_env(
+        monkeypatch, contacts=[{"public_key": _TEST_CONTACT_KEY, "adv_name": "Sensor"}]
+    )
+    contact = {"public_key": _TEST_CONTACT_KEY, "adv_name": "Sensor"}
+
+    class _Cmds:
+        async def req_telemetry_sync(self, _contact):
+            return None  # timeout → falls back to status
+
+        async def req_status_sync(self, _contact):
+            return {"bat": 4056}
+
+    class _MC:
+        commands = _Cmds()
+
+    ok = asyncio.run(
+        mc_tel._request_contact_telemetry(_MC(), iface, stub, contact, "!11223344")
+    )
+    assert ok is True
+    assert captured[0]["decoded"]["telemetry"]["deviceMetrics"] == {"voltage": 4.056}
+
+    # Transmission forbidden → nothing sent, nothing queued.
+    monkeypatch.setattr(mc_tel.config, "TX_ENABLED", False)
+    captured.clear()
+    ok = asyncio.run(
+        mc_tel._request_contact_telemetry(_MC(), iface, stub, contact, "!11223344")
+    )
+    assert ok is False and captured == []
 
 
 def test_on_channel_msg_queues_packet(monkeypatch):

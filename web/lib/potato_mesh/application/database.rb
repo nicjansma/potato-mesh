@@ -110,7 +110,7 @@ module PotatoMesh
       def init_db
         FileUtils.mkdir_p(File.dirname(PotatoMesh::Config.db_path))
         db = open_database
-        %w[nodes messages positions telemetry neighbors instances traces ingestors ingestor_activity waypoints].each do |schema|
+        %w[nodes messages positions telemetry neighbors instances traces ingestors ingestor_activity waypoints telemetry_requests].each do |schema|
           sql_file = File.expand_path("../../../../data/#{schema}.sql", __dir__)
           db.execute_batch(File.read(sql_file))
         end
@@ -595,6 +595,13 @@ module PotatoMesh
         if destination_tables.empty?
           destinations_schema = File.expand_path("../../../../data/destinations.sql", __dir__)
           db.execute_batch(File.read(destinations_schema))
+        end
+
+        telemetry_request_tables =
+          db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='telemetry_requests'").flatten
+        if telemetry_request_tables.empty?
+          telemetry_requests_schema = File.expand_path("../../../../data/telemetry_requests.sql", __dir__)
+          db.execute_batch(File.read(telemetry_requests_schema))
         end
       rescue SQLite3::SQLException, Errno::ENOENT => e
         warn_log(
